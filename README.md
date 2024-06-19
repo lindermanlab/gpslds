@@ -22,3 +22,11 @@ data/                           Code and data files for main synthetic data exam
 synthetic_data_demo.ipynb       Demo notebook fitting gpSLDS to synthetic data.
 ```
 
+## Data format
+To use the gpSLDS on your own data, you will need to ensure that you have:
+- A JAX array `ys_binned` of shape `(n_trials, n_timesteps, n_output_dims)`. To process data in effectively continuous-time, `n_timesteps` should represent the number of time bins at a small discretization step relative to the data sampling rate. We assume that data has been zero-padded in the case of varying length trials.
+- A JAX array `t_mask` of shape `(n_trials, n_timesteps)`. This is 1 for observed timesteps and 0 for unobserved timesteps.
+- A JAX array `trial_mask` of shape `(n_trials, n_timesteps)`. This is 1 for timesteps in an observed trial and 0 for a zero-padded timestep.
+- (Optional) A JAX array `inputs` of shape `(n_trials, n_timesteps, n_input_dims)` consisting of external stimuli.
+
+For an example, please see `synthetic_data_demo.ipynb` which demonstrates data formatting and model fitting on a synthetic example.
