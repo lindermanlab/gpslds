@@ -288,10 +288,10 @@ def fit_variational_em(key,
                        fn, 
                        likelihood, 
                        trial_mask, 
-                       inputs, 
                        output_params, 
                        kernel, 
                        kernel_params, 
+                       inputs=None,
                        m0=None, 
                        mu0=None, 
                        n_iters=100, 
@@ -311,10 +311,10 @@ def fit_variational_em(key,
     fn: class object from transition.py
     likelihood: class object from likelihoods.py
     trial_mask: (n_trials, n_timesteps) binary mask indicating when trials are active (handles varying-length trials)
-    inputs: (n_trials, n_timesteps, I) external inputs
     output_params: dict containing output mapping parameters
     kernel: class object from kernels.py
     kernel_params: dict containing kernel parameters
+    inputs: optional (n_trials, n_timesteps, I) external inputs, default 0
     m0, mu0: optional {posterior, prior} mean for x0, default 0
     n_iters: number of vEM iters to run
     n_iters_e: number of E-step iters to run per vEM iter
@@ -374,15 +374,17 @@ def fit_variational_em(key,
         return m0, S0, ms, Ss, lmbdas, Psis, As, bs, B, q_u_mu, q_u_sigma, mu0, V0, output_params, kernel_params, elbo_val
     
     n_trials, n_timesteps, _ = likelihood.ys_binned.shape
-    I = inputs.shape[-1]
-    M = len(fn.zs)
 
     # initialize parameters for variational EM
+    if inputs is None:
+        inputs = jnp.zeros((n_trials, n_timesteps, 1))
     if m0 is None:
         m0 = jnp.zeros((n_trials, K))
     if mu0 is None:
         mu0 = jnp.zeros((n_trials, K))
     mean_init, var_init = 0., dt * 10
+    M = len(fn.zs)
+    I = inputs.shape[-1]
     S0, V0, As, bs, ms, Ss, q_u_mu, q_u_sigma, B = initialize_vem(n_trials, n_timesteps, K, M, I, mean_init, var_init)
 
     # initialize a default learning rate schedule
