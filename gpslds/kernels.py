@@ -147,7 +147,7 @@ class SSL(Kernel):
         """
         linear_params = kernel_params["linear_params"] # list of linear params, one dict per regime
         W = kernel_params["W"]
-        log_tau = kernel_params["log_tau"]p
+        log_tau = kernel_params["log_tau"]
         pi_x1 = self.construct_partition(x1, W, log_tau)
         pi_x2 = self.construct_partition(x2, W, log_tau)
         linear_kernels = jnp.array([self.linear_kernel.K(x1, x2, param) for param in linear_params]) # (num_states,)
