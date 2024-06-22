@@ -16,7 +16,7 @@ class SparseGP:
     def prior_term(self, q_u_mu, q_u_sigma, kernel_params):
         """Computes sum of KL[q(u_d)||p(u_d)]]."""
         Kzz = vmap(vmap(partial(self.kernel.K, kernel_params=kernel_params), (None, 0)), (0, None))(self.zs, self.zs) + self.jitter * jnp.eye(len(self.zs)) # (M, M)
-        q_dist = tfd.MultivariateNormalFullCovariance(q_u_mu, q_u_sigma) # one sample is shape (D, M)
+        q_dist = tfd.MultivariateNormalFullCovariance(q_u_mu, q_u_sigma) # one sample is shape (K, M)
         p_dist = tfd.MultivariateNormalFullCovariance(0, Kzz) # one sample is shape (M, ) (prior dist is same across dimensions)
         kl = tfd.kl_divergence(q_dist, p_dist).sum()
         return -kl

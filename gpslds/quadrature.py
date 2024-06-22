@@ -5,9 +5,6 @@ import jax.numpy as jnp
 
 import numpy as np
 from numpy.polynomial.hermite_e import hermegauss
-from numpy.polynomial.legendre import leggauss
-
-from utils import gauss_legendre
 
 class GaussHermiteQuadrature:
     def __init__(self, K, n_quad=10):

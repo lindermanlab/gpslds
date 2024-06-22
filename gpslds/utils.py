@@ -174,26 +174,26 @@ def get_posterior_f_var(kernel_fn, kernel_params, Xs, zs, q_u_sigma, jitter=1e-8
     f_var = jnp.diag(Kxx - Kxz @ jnp.linalg.solve(Kzz, Kxz.T) + Kxz @ jnp.linalg.solve(Kzz, q_u_sigma) @ jnp.linalg.solve(Kzz, Kxz.T)) # marginalized over q_u
     return f_var
 
-def get_learned_pis(pi_fn, kernel_params, Xs):
+def get_learned_partition(partition_fn, kernel_params, Xs):
     """
     Compute value of pi(x) at each point in Xs.
 
     Parameters:
     -------------
-    pi_fn: construct_pi function from MixtureBases kernel class
-    kernel_params: MixtureBases kernel params dict
+    partition_fn: construct_partition function from SSL kernel class
+    kernel_params: SSL kernel params dict
     Xs: (n_points, K) batch of points to evaluate pi
 
     Returns:
     -------------
     learned_pis: (n_points, num_states) pi evaluated at Xs
     """
-    learned_pis = vmap(pi_fn, (0, None, None))(Xs, kernel_params['W'], kernel_params['log_tau'])
+    learned_pis = vmap(partition_fn, (0, None, None))(Xs, kernel_params['W'], kernel_params['log_tau'])
     return learned_pis
     
-def get_most_likely_state(pi_fn, kernel_params, Xs):
+def get_most_likely_state(partition_fn, kernel_params, Xs):
     """Compute most likely state at each point in Xs."""
-    learned_pis = get_learned_pis(pi_fn, kernel_params, Xs)
+    learned_pis = get_learned_partition(partition_fn, kernel_params, Xs)
     most_likely_states = jnp.argmax(learned_pis, 1)
     return most_likely_states
     

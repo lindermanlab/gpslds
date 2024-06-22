@@ -1,5 +1,3 @@
-# TODO: refactor code to get rid of repeated functions MixtureBases and MixtureNN
-
 import jax
 jax.config.update("jax_enable_x64", True)
 
@@ -123,13 +121,13 @@ class FullLinear(Kernel):
         noise_var = jnp.exp(kernel_params["log_noise_var"])
         return (M * (x1 - c) * (x2 - c)).sum() + noise_var
 
-class MixtureBases(Kernel):
+class SSL(Kernel):
     def __init__(self, quadrature, linear_kernel, basis_set=None):
         super().__init__(quadrature)
         self.linear_kernel = linear_kernel
         self.basis_set = basis_set
 
-    def construct_pi(self, x, W, log_tau):
+    def construct_partition(self, x, W, log_tau):
         """Construct partition function pi at a given latent space location x."""
         activations = W.T @ self.basis_set(x)
         pi = tfb.SoftmaxCentered().forward(activations / jnp.exp(log_tau))
@@ -137,7 +135,7 @@ class MixtureBases(Kernel):
 
     def K(self, x1, x2, kernel_params):
         """
-        Compute MixtureBases (i.e. SSL) kernel. 
+        Compute smoothly switching linear (SSL) kernel. 
 
         Parameters:
         --------------
@@ -149,9 +147,9 @@ class MixtureBases(Kernel):
         """
         linear_params = kernel_params["linear_params"] # list of linear params, one dict per regime
         W = kernel_params["W"]
-        log_tau = kernel_params["log_tau"]
-        pi_x1 = self.construct_pi(x1, W, log_tau)
-        pi_x2 = self.construct_pi(x2, W, log_tau)
+        log_tau = kernel_params["log_tau"]p
+        pi_x1 = self.construct_partition(x1, W, log_tau)
+        pi_x2 = self.construct_partition(x2, W, log_tau)
         linear_kernels = jnp.array([self.linear_kernel.K(x1, x2, param) for param in linear_params]) # (num_states,)
         return (pi_x1 * pi_x2 * linear_kernels).sum()
 
