@@ -1,5 +1,4 @@
 # gpSLDS
-NOTE: in progress...
 
 This repository contains an implementation of Gaussian Process Switching Linear Dynamical Systems (gpSLDS), described in the paper here (insert link).
 
@@ -30,3 +29,6 @@ To use the gpSLDS on your own data, you will need to ensure that you have:
 - (Optional) A JAX array `inputs` of shape `(n_trials, n_timesteps, n_input_dims)` consisting of external stimuli.
 
 For an example, please see `synthetic_data_demo.ipynb` which demonstrates data formatting and model fitting on a synthetic example.
+
+## How to run
+The current recommended way to run this code is by using a NVIDIA A100 GPU. The fastest way to get this running is by using Google colab with an A100 GPU runtime, which is demonstrated in `synthetic_data_demo.ipynb`.
