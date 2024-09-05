@@ -1,6 +1,8 @@
 # gpSLDS
 
-This repository contains an implementation of Gaussian Process Switching Linear Dynamical Systems (gpSLDS), described in the paper here (insert link).
+This repository contains an implementation of Gaussian Process Switching Linear Dynamical Systems (gpSLDS), described in our paper [here](https://arxiv.org/abs/2408.03330). The current recommended citation for this paper is:
+
+> Hu, A., Zoltowski, D., Nair, A., Anderson, D., Duncker, L., & Linderman, S. (2024). Modeling Latent Neural Dynamics with Gaussian Process Switching Linear Dynamical Systems. arXiv preprint arXiv:2408.03330.
 
 ## Repo structure
 ```
