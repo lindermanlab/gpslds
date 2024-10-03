@@ -49,7 +49,7 @@ def bin_regularly_sampled_data(dt, ys, bin_size):
     ys_binned[:,t_mask.astype(bool),:] = ys
     t_mask = t_mask[None].repeat(n_trials, axis=0) # repeat across trial dimension
     
-    return ys_binned, t_mask
+    return jnp.array(ys_binned), jnp.array(t_mask)
     
 def bin_sparse_data(ys, t_obs, t_max, dt):
     """
