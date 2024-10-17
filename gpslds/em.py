@@ -4,13 +4,13 @@ jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 import jax.random as jr
 from jax import lax, jit, grad, vmap
-import numpy as np
 from functools import partial
 import tensorflow_probability.substrates.jax as tfp
 tfd = tfp.distributions
-from utils import make_gram
-from initialization import initialize_vem
+from .utils import make_gram
+from .initialization import initialize_vem
 import optax
+
 import wandb
 
 # --------- ELBO FUNCTIONS ----------
