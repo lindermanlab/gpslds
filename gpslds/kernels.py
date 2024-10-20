@@ -6,9 +6,11 @@ from jax import lax, jit, grad, vmap
 import tensorflow_probability.substrates.jax as tfp
 tfb = tfp.bijectors
 from functools import partial
-from utils import gaussian_int
+from .utils import gaussian_int
 
-class Kernel:
+from abc import ABC, abstractmethod
+
+class Kernel(ABC):
     def __init__(self, quadrature): 
         self.quadrature = quadrature
         
@@ -18,7 +20,7 @@ class Kernel:
         fn = lambda x: self.K(x, x, kernel_params)
         return gaussian_int(fn, m, S, self.quadrature.weights, self.quadrature.unit_sigmas) # scalar
 
-    def E_Kxz(self, z, m, S, kernel_params):
+    def E_Kxz(self, t, z, m, S, kernel_params):
         """Computes E[k(x,z)] wrt q(x) = N(x|m,S)."""
         fn = lambda x: self.K(x, z, kernel_params)
         return gaussian_int(fn, m, S, self.quadrature.weights, self.quadrature.unit_sigmas) # scalar
@@ -32,6 +34,10 @@ class Kernel:
         """Computes E[dk(z,x)/dx] wrt q(x) = N(x|m,S)."""
         fn = grad(partial(self.K, z, kernel_params=kernel_params))
         return gaussian_int(fn, m, S, self.quadrature.weights, self.quadrature.unit_sigmas) # (D, )
+    
+    @abstractmethod
+    def K(self, x1, x2, kernel_params):
+        raise NotImplementedError
 
 class RBF(Kernel):
     def __init__(self, quadrature):
@@ -153,4 +159,69 @@ class SSL(Kernel):
         linear_kernels = jnp.array([self.linear_kernel.K(x1, x2, param) for param in linear_params]) # (num_states,)
         return (pi_x1 * pi_x2 * linear_kernels).sum()
 
+class TimeDepKernel(ABC):
+    """
+    A kernel which is a function of both the latent state x as well as time
+    """
+    def __init__(self, quadrature): 
+        """
+        quadrature: a quadrature object for the latent dimensions 
+        """
+        self.quadrature = quadrature
+        
+    # --------- Expectations computed with quadrature ----------
+    # NOTE: Now, kernel expectation is also a function of time, although time 
+    # does not affect quadrature (since the integral is only taken wrt x)
+    def E_Kxx(self, t, m, S, kernel_params):
+        """Computes E[k(x,x)] wrt q(x) = N(x|m,S)."""
+        fn = lambda x: self.K(jnp.concatenate([x, t], axis=-1), jnp.concatenate([x, t], axis=-1), 
+                              kernel_params)
+        return gaussian_int(fn, m, S, self.quadrature.weights, self.quadrature.unit_sigmas) # scalar
+
+    def E_Kxz(self, t, z, m, S, kernel_params):
+        """Computes E[k(x,z)] wrt q(x) = N(x|m,S)."""
+        fn = lambda x: self.K(jnp.concatenate([x, t], axis=-1), z, kernel_params)
+        return gaussian_int(fn, m, S, self.quadrature.weights, self.quadrature.unit_sigmas) # scalar
+
+    def E_KzxKxz(self, t, z1, z2, m, S, kernel_params):
+        """Computes E[k(z1,x)k(x,z2)] wrt q(x) = N(x|m,S)."""
+        fn = lambda x: self.K(z1, jnp.concatenate([x, t], axis=-1), kernel_params) * self.K(jnp.concatenate([x, t], axis=-1), z2, kernel_params)
+        return gaussian_int(fn, m, S, self.quadrature.weights, self.quadrature.unit_sigmas) # scalar
+
+    def E_dKzxdx(self, t, z, m, S, kernel_params):
+        """Computes E[dk(z,x)/dx] wrt q(x) = N(x|m,S)."""
+        # Derivative is not taken wrt time
+        lambda x1: self.K(jnp.concatenate([x1, t]), z, kernel_params=kernel_params)
+        fn = grad(lambda x1: self.K(jnp.concatenate([x1, t]), z, kernel_params=kernel_params))
+        return gaussian_int(fn, m, S, self.quadrature.weights, self.quadrature.unit_sigmas) # (D, )
     
+    @abstractmethod  
+    def K(self, w1, w2, kernel_params):
+        """
+        Each of w1, w2 is a (D + 1)-dimensional vector representing a space-time coordinate
+        """
+        return NotImplementedError
+
+class TimeDepSSL(TimeDepKernel):
+
+    def __init__(self, quadrature, linear_kernel, basis_set=None):
+        super().__init__(quadrature)
+        self.linear_kernel = linear_kernel
+        self.basis_set = basis_set
+
+    def construct_partition(self, x, W, log_tau):
+        return SSL.construct_partition(self, x, W, log_tau)
+
+    def K(self, w1, w2, kernel_params): 
+
+        # Extract state from combined state
+        x1, x2 = w1[..., 0:-1], w2[..., 0:-1]
+        linear_params = kernel_params["linear_params"] # list of linear params, one dict per regime
+        W = kernel_params["W"]
+        log_tau = kernel_params["log_tau"]
+        # Partition is a function of both latent state and time
+        pi_w1 = self.construct_partition(w1, W, log_tau)
+        pi_w2 = self.construct_partition(w2, W, log_tau)
+        # Linear kernel(s) are only evaluated at spatial points
+        linear_kernels = jnp.array([self.linear_kernel.K(x1, x2, param) for param in linear_params]) # (num_states,)
+        return (pi_w1 * pi_w2 * linear_kernels).sum()

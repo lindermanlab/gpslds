@@ -6,12 +6,36 @@ from jax import lax, jit, grad, vmap
 from functools import partial
 import tensorflow_probability.substrates.jax as tfp
 tfd = tfp.distributions
+from .kernels import TimeDepKernel
 
-class SparseGP:
-    def __init__(self, zs, kernel, jitter=1e-4):
-        self.zs = zs
+
+class SparseGP():
+    def __init__(self, zs_x, kernel, zs_t=None, jitter=1e-4):
+        """
+        zs_x: grid of inducing points in latent space, of shape (M, D)
+        zs_t: grid of inducing points in temporal domain, of shape (T,)
+        """
+        self.M = zs_x.shape[0]
+        self.zs_x = zs_x
+        self.zs_t = zs_t        
+
+        if self.zs_t is not None:
+            # Should only have temporal inducing points if kernel is time-dependent           
+            assert isinstance(kernel, TimeDepKernel)
+            self.T = zs_t.shape[0]
+            self._create_inducing_points_grid()
+
         self.kernel = kernel
         self.jitter = jitter
+
+    def _create_inducing_points_grid(self):
+        """Instantiates grid of space x time inducing points"""
+
+        self.zs_x = jnp.tile(self.zs_x, (self.T, 1, 1)) # Array of shape (T, M, D)
+        self.zs_t = jnp.repeat(self.zs_t,self.M, axis=1) # Array of shape (T, M, 1)
+
+        # Flatten to the last dimension 
+        self.zs = jnp.concatenate([self.zs_x.reshape((-1, 2)), self.zs_t.reshape((-1, 1))], axis=-1) # Array of shape (TM, D + 1)
 
     def prior_term(self, q_u_mu, q_u_sigma, kernel_params):
         """Computes sum of KL[q(u_d)||p(u_d)]]."""
@@ -22,10 +46,9 @@ class SparseGP:
         return -kl
 
     # --------- Closed-form expectations wrt q(f) and q(x) ----------
-
-    def f(self, m, S, q_u_mu, q_u_sigma, kernel_params):
+    def f(self, t, m, S, q_u_mu, q_u_sigma, kernel_params):
         """
-        Computes E[f(x)] wrt q(f) and q(x) = N(x|m, S).
+        Computes E[f(x, t)] wrt q(f) and q(x) = N(x|m, S).
 
         Parameters
         ------------
@@ -41,7 +64,10 @@ class SparseGP:
         E_f: (K, ) expectation of f(x)
         """
         M, K = self.zs.shape
-        E_Kxz = vmap(partial(self.kernel.E_Kxz, m=m, S=S, kernel_params=kernel_params))(self.zs)[None] # (1, M)
+        if self.zs_t is not None: 
+            E_Kxz = vmap(partial(self.kernel.E_Kxz, m=m, S=S, kernel_params=kernel_params))(self.zs, t)[None] # (1, M)
+        else:
+            E_Kxz = vmap(partial(self.kernel.E_Kxz, m=m, S=S, kernel_params=kernel_params))(self.zs)[None]
         Kzz = vmap(vmap(partial(self.kernel.K, kernel_params=kernel_params), (None, 0)), (0, None))(self.zs, self.zs) + self.jitter * jnp.eye(M) # (M, M)
         E_f = E_Kxz @ jnp.linalg.solve(Kzz, q_u_mu.T)
         return E_f[0] 

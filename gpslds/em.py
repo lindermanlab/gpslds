@@ -8,20 +8,21 @@ import numpy as np
 from functools import partial
 import tensorflow_probability.substrates.jax as tfp
 tfd = tfp.distributions
-from utils import make_gram
-from initialization import initialize_vem
+from .utils import make_gram
+from .initialization import initialize_vem
 import optax
 import wandb
 
 # --------- ELBO FUNCTIONS ----------
 
-def kl(fn, m, S, A, b, input, B, q_u_mu, q_u_sigma, kernel, kernel_params):
+def kl(fn, t, m, S, A, b, input, B, q_u_mu, q_u_sigma, kernel, kernel_params):
     """
     Compute the integrand of expected KL[q(x)||p(x)] at a given timepoint.
 
     Parameters
     ------------
     m: (K,) mean vector
+    t: (1,) the time at which the KL divergence is evaluated 
     S: (K, K) covariance matrix
     A: (K, K) transition matrix
     b: (K,) bias vector
@@ -46,9 +47,9 @@ def kl(fn, m, S, A, b, input, B, q_u_mu, q_u_sigma, kernel, kernel_params):
     kl = 0.5 * kl
     return kl
 
-def kl_over_time(dt, fn, trial_mask, ms, Ss, As, bs, inputs, B, q_u_mu, q_u_sigma, kernel, kernel_params):
+def kl_over_time(dt, fn, time_grid, trial_mask, ms, Ss, As, bs, inputs, B, q_u_mu, q_u_sigma, kernel, kernel_params):
     """Compute expected KL[q(x)||p(x)] (an integral over time) for a single trial."""
-    kl_on_grid = vmap(partial(kl, fn, B=B, q_u_mu=q_u_mu, q_u_sigma=q_u_sigma, kernel=kernel, kernel_params=kernel_params))(ms, Ss, As, bs, inputs)
+    kl_on_grid = vmap(partial(kl, fn, B=B, q_u_mu=q_u_mu, q_u_sigma=q_u_sigma, kernel=kernel, kernel_params=kernel_params))(time_grid, ms, Ss, As, bs, inputs)
     kl_term = dt * (kl_on_grid * trial_mask).sum()
     return kl_term
 
