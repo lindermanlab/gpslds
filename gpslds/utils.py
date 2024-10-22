@@ -9,6 +9,9 @@ tfd = tfp.distributions
 
 from jax import lax, jit, grad, vmap
 from functools import partial
+# TODO: resolve circular import
+# from .kernels import Kernel, TimeDepKernel
+from typing import Union
 
 import numpy as np
 from numpy.polynomial.legendre import leggauss
@@ -111,43 +114,44 @@ def get_transformation_for_latents(C, C_hat):
     P = Vt.T @ jnp.diag(1./S) @ U.T @ C_hat
     return P
 
-def make_gram(kernel_fn, kernel_params, Xs, Xps, jitter=1e-8):
-    """
-    Compute gram matrix between inputs Xs and Xps.
+# move make_gram to the kernel class
+# def make_gram(kernel_fn, kernel_params, Xs, Xps, jitter=1e-8):
+#   """
+#    Compute gram matrix between inputs Xs and Xps.
+#
+#    Parameters:
+#    ---------------
+#    kernel_fn: function from Kernel class
+#    kernel_params: dict
+#   Xs: (n_points, K) first batch of input points
+#    Xps: (n_points_2, K) second batch of input points
+#   jitter: optional jitter to add to gram matrix, should be None if Xs != Xps
+#
+#    Returns:
+#    ---------------
+#    K: (n_points, n_points_2) gram matrix
+#    """
+#   K = vmap(vmap(partial(kernel_fn, kernel_params=kernel_params), (None, 0)), (0, None))(Xs, Xps)
+#   if jitter is not None:
+#       K += jitter * jnp.eye(len(Xs))
+#   return K
 
-    Parameters:
-    ---------------
-    kernel_fn: function from Kernel class
-    kernel_params: dict
-    Xs: (n_points, K) first batch of input points
-    Xps: (n_points_2, K) second batch of input points
-    jitter: optional jitter to add to gram matrix, should be None if Xs != Xps
-
-    Returns:
-    ---------------
-    K: (n_points, n_points_2) gram matrix
-    """
-    K = vmap(vmap(partial(kernel_fn, kernel_params=kernel_params), (None, 0)), (0, None))(Xs, Xps)
-    if jitter is not None:
-        K += jitter * jnp.eye(len(Xs))
-    return K
-
-def get_induced_f(kernel_fn, kernel_params, Xs, zs, f_zs, jitter=1e-8):
+def get_induced_f(kernel, kernel_params, Xs, zs, f_zs, jitter=1e-8):
     """Compute posterior mean and covariance of dynamics on Xs given observed values f_zs at zs."""
-    Kzz = make_gram(kernel_fn, kernel_params, zs, zs, jitter=jitter)
-    Kxz = make_gram(kernel_fn, kernel_params, Xs, zs, jitter=None)
-    Kxx = make_gram(kernel_fn, kernel_params, Xs, Xs, jitter=jitter)
+    Kzz = kernel.make_gram(kernel_params, zs, zs, jitter=jitter)
+    Kxz = kernel.make_gram(kernel_params, Xs, zs, jitter=None)
+    Kxx = kernel.make_gram(kernel_params, Xs, Xs, jitter=jitter)
     f_mean = Kxz @ jnp.linalg.solve(Kzz, f_zs)
     f_cov = Kxx - Kxz @ jnp.linalg.solve(Kzz, Kxz.T)
     return f_mean, f_cov
 
-def get_posterior_f_mean(kernel_fn, kernel_params, Xs, zs, q_u_mu, jitter=1e-8):
+def get_posterior_f_mean(kernel, kernel_params, Xs, zs, q_u_mu, jitter=1e-8):
     """
     Compute posterior mean of dynamics on a new set of points given variational distribution of inducing points.
     
     Parameters:
     ---------------
-    kernel_fn: function from Kernel class
+    kernel_fn: an instance of Kernel or TimeDepKernel class
     kernel_params: dict
     Xs: (n_points, K) new set of points in latent space
     zs: (M, K) locations of inducing points
@@ -159,17 +163,17 @@ def get_posterior_f_mean(kernel_fn, kernel_params, Xs, zs, q_u_mu, jitter=1e-8):
     f_mean: (n_points, K) posterior mean at new points
     """
     
-    Kxz = make_gram(kernel_fn, kernel_params, Xs, zs, jitter=None)
-    Kzz = make_gram(kernel_fn, kernel_params, zs, zs, jitter=jitter)
+    Kxz = kernel.make_gram(kernel_params, Xs, zs, jitter=None)
+    Kzz = kernel.make_gram(kernel_params, zs, zs, jitter=jitter)
     
     f_mean = (Kxz @ jnp.linalg.solve(Kzz, q_u_mu.T)) # marginalized over q_u
     return f_mean
 
-def get_posterior_f_var(kernel_fn, kernel_params, Xs, zs, q_u_sigma, jitter=1e-8):
+def get_posterior_f_var(kernel, kernel_params, Xs, zs, q_u_sigma, jitter=1e-8):
     """Compute posterior variance of dynamics on a new set of points given variational distribution of inducing points."""
-    Kxx = make_gram(kernel_fn, kernel_params, Xs, Xs, jitter=jitter)
-    Kxz = make_gram(kernel_fn, kernel_params, Xs, zs, jitter=None)
-    Kzz = make_gram(kernel_fn, kernel_params, zs, zs, jitter=jitter)
+    Kxx = kernel.make_gram(kernel_params, Xs, Xs, jitter=jitter)
+    Kxz = kernel.make_gram(kernel_params, Xs, zs, jitter=None)
+    Kzz = kernel.make_gram(kernel_params, zs, zs, jitter=jitter)
 
     f_var = jnp.diag(Kxx - Kxz @ jnp.linalg.solve(Kzz, Kxz.T) + Kxz @ jnp.linalg.solve(Kzz, q_u_sigma) @ jnp.linalg.solve(Kzz, Kxz.T)) # marginalized over q_u
     return f_var
@@ -196,4 +200,3 @@ def get_most_likely_state(partition_fn, kernel_params, Xs):
     learned_pis = get_learned_partition(partition_fn, kernel_params, Xs)
     most_likely_states = jnp.argmax(learned_pis, 1)
     return most_likely_states
-    

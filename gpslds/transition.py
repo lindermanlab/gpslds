@@ -16,14 +16,16 @@ class SparseGP():
         zs_t: grid of inducing points in temporal domain, of shape (T,)
         """
         self.M = zs_x.shape[0]
-        self.zs_x = zs_x
         self.zs_t = zs_t        
+        self.zs_x = zs_x
 
         if self.zs_t is not None:
             # Should only have temporal inducing points if kernel is time-dependent           
             assert isinstance(kernel, TimeDepKernel)
             self.T = zs_t.shape[0]
             self._create_inducing_points_grid()
+        else:
+            self.zs = self.zs_x
 
         self.kernel = kernel
         self.jitter = jitter
@@ -39,12 +41,12 @@ class SparseGP():
 
     def prior_term(self, q_u_mu, q_u_sigma, kernel_params):
         """Computes sum of KL[q(u_d)||p(u_d)]]."""
-        Kzz = vmap(vmap(partial(self.kernel.K, kernel_params=kernel_params), (None, 0)), (0, None))(self.zs, self.zs) + self.jitter * jnp.eye(len(self.zs)) # (M, M)
+        Kzz = self.kernel.make_gram(kernel_params, self.zs, self.zs, self.jitter)
         q_dist = tfd.MultivariateNormalFullCovariance(q_u_mu, q_u_sigma) # one sample is shape (K, M)
         p_dist = tfd.MultivariateNormalFullCovariance(0, Kzz) # one sample is shape (M, ) (prior dist is same across dimensions)
         kl = tfd.kl_divergence(q_dist, p_dist).sum()
         return -kl
-
+    
     # --------- Closed-form expectations wrt q(f) and q(x) ----------
     def f(self, t, m, S, q_u_mu, q_u_sigma, kernel_params):
         """
@@ -53,7 +55,7 @@ class SparseGP():
         Parameters
         ------------
         kernel: kernel instance
-        zs: (M, K) inducing point input locations
+        t: time at which the expectation is being evaluated 
         m: (K, ) variational mean of x
         S: (K, K) variational covariance of x
         q_u_mu: (K, M) variational mean of u
@@ -65,35 +67,50 @@ class SparseGP():
         """
         M, K = self.zs.shape
         if self.zs_t is not None: 
-            E_Kxz = vmap(partial(self.kernel.E_Kxz, m=m, S=S, kernel_params=kernel_params))(self.zs, t)[None] # (1, M)
+            # Need to take into account the time at which this expectation is being evaluated
+            E_Kxz = vmap(partial(self.kernel.E_Kxz, t, m=m, S=S, kernel_params=kernel_params))(self.zs)[None] # (1, M)
         else:
             E_Kxz = vmap(partial(self.kernel.E_Kxz, m=m, S=S, kernel_params=kernel_params))(self.zs)[None]
+        # TODO: ask Amber: why can't Kzz, Kzz_inv be precomputed when SparseGP is first initialized
         Kzz = vmap(vmap(partial(self.kernel.K, kernel_params=kernel_params), (None, 0)), (0, None))(self.zs, self.zs) + self.jitter * jnp.eye(M) # (M, M)
+        # TODO: modify matrix inversion when K is a product kernel 
         E_f = E_Kxz @ jnp.linalg.solve(Kzz, q_u_mu.T)
         return E_f[0] 
 
-    def ff(self, m, S, q_u_mu, q_u_sigma, kernel_params):
+    def ff(self, t, m, S, q_u_mu, q_u_sigma, kernel_params):
         """
-        Computes E[f(x)'f(x)] wrt q(f) and q(x) = N(x|m, S).
+        Computes E[f(x, t)'f(x, t)] wrt q(f) and q(x) = N(x|m, S).
         """
         M, K = self.zs.shape
-        E_KzxKxz = vmap(vmap(partial(self.kernel.E_KzxKxz, m=m, S=S, kernel_params=kernel_params), (None, 0)), (0, None))(self.zs, self.zs) # (M, M)
-        Kzz = vmap(vmap(partial(self.kernel.K, kernel_params=kernel_params), (None, 0)), (0, None))(self.zs, self.zs) + self.jitter * jnp.eye(M) # (M, M)
+        if self.zs_t is not None: 
+            E_KzxKxz = vmap(vmap(partial(self.kernel.E_KzxKxz, t, m=m, S=S, kernel_params=kernel_params), (None, 0)), (0, None))(self.zs, self.zs) # (M, M)
+            E_Kxx = self.kernel.E_Kxx(t, m, S, kernel_params)
+        else: 
+            E_KzxKxz = vmap(vmap(partial(self.kernel.E_KzxKxz, m=m, S=S, kernel_params=kernel_params), (None, 0)), (0, None))(self.zs, self.zs) # (M, M)
+            E_Kxx = self.kernel.E_Kxx(m, S, kernel_params)
+
+        # TODO: modify matrix inversion when K is a product kernel 
+        Kzz = self.kernel.make_gram(kernel_params, self.zs, self.zs, self.jitter)
         Kzz_inv = jnp.linalg.solve(Kzz, jnp.eye(M))
 
-        term1 = K * (self.kernel.E_Kxx(m, S, kernel_params) - jnp.trace(Kzz_inv @ E_KzxKxz))
+        term1 = K * (E_Kxx - jnp.trace(Kzz_inv @ E_KzxKxz))
         term2 = jnp.trace(Kzz_inv @ q_u_sigma.sum(0) @ Kzz_inv @ E_KzxKxz)
         term3 = jnp.trace(E_KzxKxz @ Kzz_inv @ q_u_mu.T @ q_u_mu @ Kzz_inv)
 
         return term1 + term2 + term3 # scalar
 
-    def dfdx(self, m, S, q_u_mu, q_u_sigma, kernel_params):
+    def dfdx(self, t, m, S, q_u_mu, q_u_sigma, kernel_params):
         """
         Computes E[df/dx] wrt q(f) and q(x) = N(x|m, S).
         """
         M, K = self.zs.shape
-        E_dKzxdx = vmap(partial(self.kernel.E_dKzxdx, m=m, S=S, kernel_params=kernel_params))(self.zs) 
-        Kzz = vmap(vmap(partial(self.kernel.K, kernel_params=kernel_params), (None, 0)), (0, None))(self.zs, self.zs) + self.jitter * jnp.eye(M) # (M, M)
+        if self.zs_t is not None: 
+            E_dKzxdx = vmap(partial(self.kernel.E_dKzxdx, t, m=m, S=S, kernel_params=kernel_params))(self.zs)
+        else:
+            E_dKzxdx = vmap(partial(self.kernel.E_dKzxdx, m=m, S=S, kernel_params=kernel_params))(self.zs)
+
+        Kzz = self.kernel.make_gram(kernel_params, self.zs, self.zs, self.jitter)
+        # TODO: modify matrix inversion when K is a product kernel 
         Kzz_inv = jnp.linalg.solve(Kzz, jnp.eye(M))
 
         return q_u_mu @ Kzz_inv @ E_dKzxdx # (D, D)

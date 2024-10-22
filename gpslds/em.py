@@ -8,10 +8,10 @@ import numpy as np
 from functools import partial
 import tensorflow_probability.substrates.jax as tfp
 tfd = tfp.distributions
-from .utils import make_gram
 from .initialization import initialize_vem
 import optax
-import wandb
+
+import pdb
 
 # --------- ELBO FUNCTIONS ----------
 
@@ -22,7 +22,7 @@ def kl(fn, t, m, S, A, b, input, B, q_u_mu, q_u_sigma, kernel, kernel_params):
     Parameters
     ------------
     m: (K,) mean vector
-    t: (1,) the time at which the KL divergence is evaluated 
+    t: time at which KL divergence is computed
     S: (K, K) covariance matrix
     A: (K, K) transition matrix
     b: (K,) bias vector
@@ -34,44 +34,47 @@ def kl(fn, t, m, S, A, b, input, B, q_u_mu, q_u_sigma, kernel, kernel_params):
     kl: scalar, integrand of expected KL[q(x)||p(x)]
     """
     # compute autonomous KL part
-    kl = fn.ff(m, S, q_u_mu, q_u_sigma, kernel_params)
-    kl += 2 * jnp.trace(A.T @ fn.dfdx(m, S, q_u_mu, q_u_sigma, kernel_params) @ S)
+    kl = fn.ff(t, m, S, q_u_mu, q_u_sigma, kernel_params)
+    kl += 2 * jnp.trace(A.T @ fn.dfdx(t, m, S, q_u_mu, q_u_sigma, kernel_params) @ S)
     kl += jnp.trace(A.T @ A @ (S + jnp.outer(m, m)))
-    kl += 2 * jnp.dot(m, A.T @ fn.f(m, S, q_u_mu, q_u_sigma, kernel_params))
-    kl += jnp.dot(b, b - 2 * fn.f(m, S, q_u_mu, q_u_sigma, kernel_params) - 2 * A @ m)
+    kl += 2 * jnp.dot(m, A.T @ fn.f(t, m, S, q_u_mu, q_u_sigma, kernel_params))
+    kl += jnp.dot(b, b - 2 * fn.f(t, m, S, q_u_mu, q_u_sigma, kernel_params) - 2 * A @ m)
     
     # compute input-dependent KL part
-    kl += 2 * jnp.dot(B @ input, fn.f(m, S, q_u_mu, q_u_sigma, kernel_params) + A @ m - b)
+    kl += 2 * jnp.dot(B @ input, fn.f(t, m, S, q_u_mu, q_u_sigma, kernel_params) + A @ m - b)
     kl += jnp.dot(B @ input, B @ input)
     
     kl = 0.5 * kl
     return kl
 
-def kl_over_time(dt, fn, time_grid, trial_mask, ms, Ss, As, bs, inputs, B, q_u_mu, q_u_sigma, kernel, kernel_params):
+def kl_over_time(t_grid, fn, trial_mask, ms, Ss, As, bs, inputs, B, q_u_mu, q_u_sigma, kernel, kernel_params):
     """Compute expected KL[q(x)||p(x)] (an integral over time) for a single trial."""
-    kl_on_grid = vmap(partial(kl, fn, B=B, q_u_mu=q_u_mu, q_u_sigma=q_u_sigma, kernel=kernel, kernel_params=kernel_params))(time_grid, ms, Ss, As, bs, inputs)
-    kl_term = dt * (kl_on_grid * trial_mask).sum()
+    # Approximate integral over time using time grid: notice that now, the integrand depends not only on {A_t} and {b_t}, but also on t directly
+    kl_on_grid = vmap(partial(kl, fn, B=B, q_u_mu=q_u_mu, q_u_sigma=q_u_sigma, kernel=kernel, kernel_params=kernel_params))(t_grid, ms, Ss, As, bs, inputs)
+    kl_term = (t_grid[1] - t_grid[0]) * (kl_on_grid * trial_mask).sum()
     return kl_term
 
-def compute_elbo_per_trial(dt, fn, likelihood, ys, t_mask, trial_mask, ms, Ss, As, bs, inputs, B, q_u_mu, q_u_sigma, output_params, kernel, kernel_params):
+def compute_elbo_per_trial(t_grid, fn, likelihood, ys, t_mask, trial_mask, ms, Ss, As, bs, inputs, B, q_u_mu, q_u_sigma, output_params, kernel, kernel_params):
     """Compute ELBO for a single trial."""
     ell_term = likelihood.ell_over_time(ys, t_mask, ms, Ss, output_params)
-    kl_term = kl_over_time(dt, fn, trial_mask, ms, Ss, As, bs, inputs, B, q_u_mu, q_u_sigma, kernel, kernel_params)
+    kl_term = kl_over_time(t_grid, fn, trial_mask, ms, Ss, As, bs, inputs, B, q_u_mu, q_u_sigma, kernel, kernel_params)
     elbo = ell_term - kl_term + fn.prior_term(q_u_mu, q_u_sigma, kernel_params)
     return elbo
 
-def compute_elbo(dt, fn, likelihood, batch_inds, trial_mask, ms, Ss, As, bs, inputs, B, output_params, kernel, kernel_params):
+def compute_elbo(t_grid, fn, likelihood, batch_inds, trial_mask, ms, Ss, As, bs, inputs, B, output_params, kernel, kernel_params):
     """Compute ELBO over a batch of trials. Used to perform inference and learning over batches of data."""
-    q_u_mu, q_u_sigma = update_q_u(dt, fn, trial_mask, ms, Ss, As, bs, inputs, B, kernel, kernel_params) 
-    kl_term = vmap(partial(kl_over_time, dt, fn, B=B, q_u_mu=q_u_mu, q_u_sigma=q_u_sigma, kernel=kernel, kernel_params=kernel_params))(trial_mask, ms, Ss, As, bs, inputs[batch_inds]).sum()
+    # Note that variational update for u is coupled with the M-step
+    q_u_mu, q_u_sigma = update_q_u(t_grid, fn, trial_mask, ms, Ss, As, bs, inputs, B, kernel, kernel_params) 
+    # NOTE: Here, we are mapping over batches of data
+    kl_term = vmap(partial(kl_over_time, t_grid, fn, B=B, q_u_mu=q_u_mu, q_u_sigma=q_u_sigma, kernel=kernel, kernel_params=kernel_params))(trial_mask, ms, Ss, As, bs, inputs[batch_inds]).sum()
     ell_term = likelihood.ell_over_trials(batch_inds, ms, Ss, output_params)
     prior_term = fn.prior_term(q_u_mu, q_u_sigma, kernel_params)
     elbo = ell_term - kl_term + prior_term 
     return elbo
 
-def compute_elbo_all_trials(dt, fn, likelihood, trial_mask, ms, Ss, As, bs, inputs, B, output_params, kernel, kernel_params, q_u_mu, q_u_sigma):
+def compute_elbo_all_trials(t_grid, fn, likelihood, trial_mask, ms, Ss, As, bs, inputs, B, output_params, kernel, kernel_params, q_u_mu, q_u_sigma):
     """Compute ELBO over entire dataset. Used for method evaluation at each vEM iter."""
-    kl_term = vmap(partial(kl_over_time, dt, fn, B=B, q_u_mu=q_u_mu, q_u_sigma=q_u_sigma, kernel=kernel, kernel_params=kernel_params))(trial_mask, ms, Ss, As, bs, inputs).sum()
+    kl_term = vmap(partial(kl_over_time, t_grid, fn, B=B, q_u_mu=q_u_mu, q_u_sigma=q_u_sigma, kernel=kernel, kernel_params=kernel_params))(trial_mask, ms, Ss, As, bs, inputs).sum()
     ell_term = likelihood.ell_over_all_trials(ms, Ss, output_params)
     prior_term = fn.prior_term(q_u_mu, q_u_sigma, kernel_params)
     elbo = ell_term - kl_term + prior_term 
@@ -150,18 +153,18 @@ def backward_pass(dt, As, bs, ms, Ss, elbo_fn):
 
     return lmbdas, Psis
 
-def variational_step(dt, fn, likelihood, ys, t_mask, trial_mask, As, bs, m0, S0, inputs, B, q_u_mu, q_u_sigma, output_params, kernel, kernel_params):
+def variational_step(t_grid, fn, likelihood, ys, t_mask, trial_mask, As, bs, m0, S0, inputs, B, q_u_mu, q_u_sigma, output_params, kernel, kernel_params):
     """Perform a single forward and backward pass in the E-step to update variational parameters."""
     # redefine elbo
-    elbo_fn = lambda ms, Ss, As, bs: compute_elbo_per_trial(dt, fn, likelihood, ys, t_mask, trial_mask, ms, Ss, As, bs, inputs, B, q_u_mu, q_u_sigma, output_params, kernel, kernel_params)
+    elbo_fn = lambda ms, Ss, As, bs: compute_elbo_per_trial(t_grid, fn, likelihood, ys, t_mask, trial_mask, ms, Ss, As, bs, inputs, B, q_u_mu, q_u_sigma, output_params, kernel, kernel_params)
 
     # forward/backward solve ODEs
-    ms, Ss = forward_pass(dt, As, bs, m0, S0)
-    lmbdas, Psis = backward_pass(dt, As, bs, ms, Ss, elbo_fn)
+    ms, Ss = forward_pass(t_grid[1] - t_grid[0], As, bs, m0, S0)
+    lmbdas, Psis = backward_pass(t_grid[1] - t_grid[0], As, bs, ms, Ss, elbo_fn)
 
     # update variational parameters
-    As = -vmap(partial(fn.dfdx, q_u_mu=q_u_mu, q_u_sigma=q_u_sigma, kernel_params=kernel_params))(ms, Ss) + 2 * Psis 
-    bs = vmap(partial(fn.f, q_u_mu=q_u_mu, q_u_sigma=q_u_sigma, kernel_params=kernel_params))(ms, Ss) + (As @ ms[...,None]).squeeze(-1) + (B[None] @ inputs[...,None]).squeeze(-1) - lmbdas 
+    As = -vmap(partial(fn.dfdx, q_u_mu=q_u_mu, q_u_sigma=q_u_sigma, kernel_params=kernel_params))(t_grid, ms, Ss) + 2 * Psis 
+    bs = vmap(partial(fn.f, q_u_mu=q_u_mu, q_u_sigma=q_u_sigma, kernel_params=kernel_params))(t_grid, ms, Ss) + (As @ ms[...,None]).squeeze(-1) + (B[None] @ inputs[...,None]).squeeze(-1) - lmbdas 
 
     # mask out As and bs after trial end (helps with stability)
     As = As * trial_mask[...,None,None]
@@ -177,9 +180,9 @@ def update_init_variational_params(mu0, V0, lmbda0, Psi0):
 
     return m0, S0
 
-def e_step(dt, fn, likelihood, batch_inds, trial_mask, As, bs, m0, S0, inputs, B, q_u_mu, q_u_sigma, output_params, kernel, kernel_params, n_iters_e):
+def e_step(t_grid, fn, likelihood, batch_inds, trial_mask, As, bs, m0, S0, inputs, B, q_u_mu, q_u_sigma, output_params, kernel, kernel_params, n_iters_e):
     """Perform a single E-step over a batch of trials"""    
-    batch_variational_step = vmap(partial(variational_step, dt, fn, likelihood, B=B, q_u_mu=q_u_mu, q_u_sigma=q_u_sigma, output_params=output_params, kernel=kernel, kernel_params=kernel_params))
+    batch_variational_step = vmap(partial(variational_step, t_grid, fn, likelihood, B=B, q_u_mu=q_u_mu, q_u_sigma=q_u_sigma, output_params=output_params, kernel=kernel, kernel_params=kernel_params))
 
     def _step(carry, arg):
         As_prev, bs_prev = carry
@@ -195,39 +198,42 @@ def e_step(dt, fn, likelihood, batch_inds, trial_mask, As, bs, m0, S0, inputs, B
 
 # ------------------ M-STEP --------------------
     
-def update_q_u(dt, fn, trial_mask, ms, Ss, As, bs, inputs, B, kernel, kernel_params):
+def update_q_u(t_grid, fn, trial_mask, ms, Ss, As, bs, inputs, B, kernel, kernel_params):
     """Perform closed-form updates for variational parameters of inducing points."""
     
     # Define helper functions on single-trial level
-    def _q_u_sigma_int(dt, fn, trial_mask, ms, Ss, kernel, kernel_params):
-        E_KzxKxz_over_zs = vmap(vmap(partial(kernel.E_KzxKxz, kernel_params=kernel_params), (None, 0, None, None)), (0, None, None, None))
-        E_KzxKxz_on_grid = vmap(E_KzxKxz_over_zs, (None, None, 0, 0))(fn.zs, fn.zs, ms, Ss) # (T, M, M)
-        int_E_KzxKxz = dt * (E_KzxKxz_on_grid * trial_mask[...,None,None]).sum(0)
+    def _q_u_sigma_int(t_grid, fn, trial_mask, ms, Ss, kernel, kernel_params):
+        E_KzxKxz_over_zs = vmap(vmap(partial(kernel.E_KzxKxz, kernel_params=kernel_params), (None, None, 0, None, None)), (None, 0, None, None, None))
+        E_KzxKxz_on_grid = vmap(E_KzxKxz_over_zs, (0, None, None, 0, 0))(t_grid, fn.zs, fn.zs, ms, Ss) # (T, M, M)
+        int_E_KzxKxz = (t_grid[1] - t_grid[0]) * (E_KzxKxz_on_grid * trial_mask[...,None,None]).sum(0)
         return int_E_KzxKxz
 
-    def _q_u_mu_int1(dt, fn, trial_mask, ms, Ss, As, bs, inputs, B, kernel, kernel_params):
-        E_Kxz_over_zs = vmap(partial(kernel.E_Kxz, kernel_params=kernel_params), (0, None, None))
-        Psi1 = vmap(E_Kxz_over_zs, (None, 0, 0))(fn.zs, ms, Ss) # (T, M)
+    def _q_u_mu_int1(t_grid, fn, trial_mask, ms, Ss, As, bs, inputs, B, kernel, kernel_params):
+        E_Kxz_over_zs = vmap(partial(kernel.E_Kxz, kernel_params=kernel_params), (None, 0, None, None))
+        Psi1 = vmap(E_Kxz_over_zs, (0, None, 0, 0))(t_grid, fn.zs, ms, Ss) # (T, M)
         f_q = (-As @ ms[...,None]).squeeze(-1) + bs # (T, D)
         input_correction = (B[None] @ inputs[...,None]).squeeze(-1) # (T, D)
         integrand_on_grid = vmap(jnp.outer)(Psi1, f_q - input_correction) # (T, M, D)
-        int1 = dt * (integrand_on_grid * trial_mask[...,None,None]).sum(0) # (M, D)
+        int1 = (t_grid[1] - t_grid[0]) * (integrand_on_grid * trial_mask[...,None,None]).sum(0) # (M, D)
         return int1
 
-    def _q_u_mu_int2(dt, fn, trial_mask, ms, Ss, As, kernel, kernel_params):
-        E_dKzxdx_over_zs = vmap(partial(kernel.E_dKzxdx, kernel_params=kernel_params), (0, None, None))
-        Psid1 = vmap(E_dKzxdx_over_zs, (None, 0, 0))(fn.zs, ms, Ss) # (T, M, D)
+    def _q_u_mu_int2(t_grid, fn, trial_mask, ms, Ss, As, kernel, kernel_params):
+        E_dKzxdx_over_zs = vmap(partial(kernel.E_dKzxdx, kernel_params=kernel_params), (None, 0, None, None))
+        Psid1 = vmap(E_dKzxdx_over_zs, (0, None, 0, 0))(t_grid, fn.zs, ms, Ss) # (T, M, D)
         integrand_on_grid = Psid1 @ Ss @ As.transpose((0, 2, 1)) # (T, M, D)
-        int2 = dt * (integrand_on_grid * trial_mask[...,None,None]).sum(0) # (M, D)
+        int2 = (t_grid[1] - t_grid[0]) * (integrand_on_grid * trial_mask[...,None,None]).sum(0) # (M, D)
         return int2
 
     # Perform updates
-    Kzz = make_gram(kernel.K, kernel_params, fn.zs, fn.zs, jitter=fn.jitter)
-    int_E_KzxKxz = vmap(partial(_q_u_sigma_int, dt, fn, kernel=kernel, kernel_params=kernel_params))(trial_mask, ms, Ss).sum(0) 
+    Kzz = kernel.make_gram(kernel_params, fn.zs, fn.zs, jitter=fn.jitter)
+
+    int_E_KzxKxz = vmap(partial(_q_u_sigma_int, t_grid, fn, 
+                                kernel=kernel, kernel_params=kernel_params))(trial_mask, ms, Ss).sum(0) 
     q_u_sigma = (Kzz @ jnp.linalg.solve(Kzz + int_E_KzxKxz, Kzz))[None].repeat(ms.shape[-1], 0) # (D, M, M)
 
-    int1 = vmap(partial(_q_u_mu_int1, dt, fn, B=B, kernel=kernel, kernel_params=kernel_params))(trial_mask, ms, Ss, As, bs, inputs).sum(0) 
-    int2 = vmap(partial(_q_u_mu_int2, dt, fn, kernel=kernel, kernel_params=kernel_params))(trial_mask, ms, Ss, As).sum(0) 
+    int1 = vmap(partial(_q_u_mu_int1, t_grid, fn, B=B, kernel=kernel, kernel_params=kernel_params))(trial_mask, ms, Ss, As, bs, inputs).sum(0) 
+    int2 = vmap(partial(_q_u_mu_int2, t_grid, fn, kernel=kernel, kernel_params=kernel_params))(trial_mask, ms, Ss, As).sum(0) 
+    # TODO: figure out how to simplify this matrix inverse when the kernel factorizes
     q_u_mu = (Kzz @ jnp.linalg.solve(Kzz + int_E_KzxKxz, int1 - int2)).T 
 
     return q_u_mu, q_u_sigma
@@ -237,12 +243,12 @@ def update_init_params(m0, S0):
     mu0, V0 = m0, S0
     return mu0, V0
 
-def update_B(dt, fn, ms, Ss, As, bs, inputs, q_u_mu, q_u_sigma, kernel, kernel_params, jitter=1e-4):
+def update_B(t_grid, fn, ms, Ss, As, bs, inputs, q_u_mu, q_u_sigma, kernel, kernel_params, jitter=1e-4):
     """Computes closed-form update for input effect matrix B."""
     
-    def _compute_hs(fn, ms, Ss, As, bs, q_u_mu, q_u_sigma, kernel_params):
+    def _compute_hs(t_grid, fn, ms, Ss, As, bs, q_u_mu, q_u_sigma, kernel_params):
         """Computes h(t) := E[f(t)] + A(t)m(t) - b(t)."""
-        E_f = vmap(partial(fn.f, q_u_mu=q_u_mu, q_u_sigma=q_u_sigma, kernel_params=kernel_params))(ms, Ss) 
+        E_f = vmap(partial(fn.f, q_u_mu=q_u_mu, q_u_sigma=q_u_sigma, kernel_params=kernel_params))(t_grid, ms, Ss) 
         hs = E_f + (As @ ms[...,None]).squeeze(-1) - bs
         return hs 
 
@@ -250,15 +256,16 @@ def update_B(dt, fn, ms, Ss, As, bs, inputs, q_u_mu, q_u_sigma, kernel, kernel_p
         """Computes \int_0^T u(t) u(t)^T dt."""
         n_inputs = inputs.shape[-1]
         outer_prod = vmap(jnp.outer)(inputs, inputs) + jitter * jnp.eye(n_inputs) 
-        return dt * outer_prod.sum(0) 
+        return (t_grid[1] - t_grid[0]) * outer_prod.sum(0) 
     
     def _int_outer_prod(hs, inputs):
         """Computes \int_0^T h(t) u(t)^T dt."""
         outer_prod = vmap(jnp.outer)(hs, inputs) 
-        return dt * outer_prod.sum(0) 
+        return (t_grid[1] - t_grid[0]) * outer_prod.sum(0) 
 
-    inputs_term = vmap(partial(_int_outer_prod_inputs, jitter=jitter))(inputs).sum(0) 
-    hs = vmap(partial(_compute_hs, fn, q_u_mu=q_u_mu, q_u_sigma=q_u_sigma, kernel_params=kernel_params))(ms, Ss, As, bs) 
+    inputs_term = vmap(partial(_int_outer_prod_inputs, jitter=jitter))(inputs).sum(0)
+    # Map over batches 
+    hs = vmap(partial(_compute_hs, t_grid, fn, q_u_mu=q_u_mu, q_u_sigma=q_u_sigma, kernel_params=kernel_params))(ms, Ss, As, bs) 
     outer_prod_term = vmap(_int_outer_prod)(hs, inputs).sum(0) 
     B = -jnp.linalg.solve(inputs_term, outer_prod_term.T).T
     return B
@@ -285,7 +292,7 @@ def sgd(loss_fn, params, n_iters_m, learning_rate):
 
 def fit_variational_em(key, 
                        K, 
-                       dt, 
+                       t_grid, 
                        fn, 
                        likelihood, 
                        trial_mask, 
@@ -308,7 +315,7 @@ def fit_variational_em(key,
     -----------------
     key: jr.PRNGKey (for selecting random mini-batches)
     K: latent dimension
-    dt: integration timestep
+    time_grid: time grid on which observations are observed
     fn: class object from transition.py
     likelihood: class object from likelihoods.py
     trial_mask: (n_trials, n_timesteps) binary mask indicating when trials are active (handles varying-length trials)
@@ -333,13 +340,14 @@ def fit_variational_em(key,
     output_params, kernel_params: dicts containing learned parameters
     elbos_lst: (n_iters,) list of elbos at each vEM iter
     """
+
     @jit
     def _step(batch_inds, m0, S0, ms, Ss, As, bs, B, q_u_mu, q_u_sigma, mu0, V0, output_params, kernel_params):
         """Runs a single E-step and M-step"""
         m0_batch, S0_batch, mu0_batch, V0_batch, As_batch, bs_batch, trial_mask_batch, inputs_batch = m0[batch_inds], S0[batch_inds], mu0[batch_inds], V0[batch_inds], As[batch_inds], bs[batch_inds], trial_mask[batch_inds], inputs[batch_inds]
         
         # run e-step
-        ms_batch, Ss_batch, lmbdas, Psis, As_batch, bs_batch = e_step(dt, fn, likelihood, batch_inds, trial_mask_batch, As_batch, bs_batch, m0_batch, S0_batch, inputs_batch, B, q_u_mu, q_u_sigma, output_params, kernel, kernel_params, n_iters_e=n_iters_e)
+        ms_batch, Ss_batch, lmbdas, Psis, As_batch, bs_batch = e_step(t_grid, fn, likelihood, batch_inds, trial_mask_batch, As_batch, bs_batch, m0_batch, S0_batch, inputs_batch, B, q_u_mu, q_u_sigma, output_params, kernel, kernel_params, n_iters_e=n_iters_e)
         ms = ms.at[batch_inds].set(ms_batch)
         Ss = Ss.at[batch_inds].set(Ss_batch)
         As = As.at[batch_inds].set(As_batch)
@@ -351,18 +359,18 @@ def fit_variational_em(key,
         S0 = S0.at[batch_inds].set(S0_batch)
 
         # update output mapping parameters
-        loss_fn_output_params = lambda output_params: -compute_elbo(dt, fn, likelihood, batch_inds, trial_mask_batch, ms_batch, Ss_batch, As_batch, bs_batch, inputs_batch, B, output_params, kernel, kernel_params)
+        loss_fn_output_params = lambda output_params: -compute_elbo(t_grid, fn, likelihood, batch_inds, trial_mask_batch, ms_batch, Ss_batch, As_batch, bs_batch, inputs_batch, B, output_params, kernel, kernel_params)
         output_params = likelihood.update_output_params(ms_batch, Ss_batch, output_params, loss_fn_output_params)
 
         # learn kernel parameters
-        loss_fn_kernel_params = lambda kernel_params: -compute_elbo(dt, fn, likelihood, batch_inds, trial_mask_batch, ms_batch, Ss_batch, As_batch, bs_batch, inputs_batch, B, output_params, kernel, kernel_params)
+        loss_fn_kernel_params = lambda kernel_params: -compute_elbo(t_grid, fn, likelihood, batch_inds, trial_mask_batch, ms_batch, Ss_batch, As_batch, bs_batch, inputs_batch, B, output_params, kernel, kernel_params)
         kernel_params, _ = sgd(loss_fn_kernel_params, kernel_params, n_iters_m, learning_rates[i])
 
         # update input matrix B
-        B = update_B(dt, fn, ms_batch, Ss_batch, As_batch, bs_batch, inputs_batch, q_u_mu, q_u_sigma, kernel, kernel_params)
+        B = update_B(t_grid, fn, ms_batch, Ss_batch, As_batch, bs_batch, inputs_batch, q_u_mu, q_u_sigma, kernel, kernel_params)
 
         # update dynamics
-        q_u_mu, q_u_sigma = update_q_u(dt, fn, trial_mask_batch, ms_batch, Ss_batch, As_batch, bs_batch, inputs_batch, B, kernel, kernel_params)
+        q_u_mu, q_u_sigma = update_q_u(t_grid, fn, trial_mask_batch, ms_batch, Ss_batch, As_batch, bs_batch, inputs_batch, B, kernel, kernel_params)
 
         # update init condition prior
         mu0_batch, V0_batch = update_init_params(m0_batch, S0_batch)
@@ -370,10 +378,11 @@ def fit_variational_em(key,
         V0 = V0.at[batch_inds].set(V0_batch)
 
         # compute ELBO on whole dataset for evaluation
-        elbo_val = compute_elbo_all_trials(dt, fn, likelihood, trial_mask, ms, Ss, As, bs, inputs, B, output_params, kernel, kernel_params, q_u_mu, q_u_sigma)   
+        elbo_val = compute_elbo_all_trials(t_grid, fn, likelihood, trial_mask, ms, Ss, As, bs, inputs, B, output_params, kernel, kernel_params, q_u_mu, q_u_sigma)   
 
         return m0, S0, ms, Ss, lmbdas, Psis, As, bs, B, q_u_mu, q_u_sigma, mu0, V0, output_params, kernel_params, elbo_val
     
+    dt = t_grid[1] - t_grid[0]
     n_trials, n_timesteps, _ = likelihood.ys_binned.shape
 
     # initialize parameters for variational EM
@@ -386,6 +395,8 @@ def fit_variational_em(key,
     mean_init, var_init = 0., dt * 10
     M = len(fn.zs)
     I = inputs.shape[-1]
+
+    # initialize parameters of variational posterior for x, variational posterior for u
     S0, V0, As, bs, ms, Ss, q_u_mu, q_u_sigma, B = initialize_vem(n_trials, n_timesteps, K, M, I, mean_init, var_init)
 
     # initialize a default learning rate schedule
