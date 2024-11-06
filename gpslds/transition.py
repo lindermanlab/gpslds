@@ -23,7 +23,7 @@ class SparseGP:
 
     # --------- Closed-form expectations wrt q(f) and q(x) ----------
 
-    def f(self, m, S, q_u_mu, q_u_sigma, kernel_params):
+    def f(self, m, S, q_u_mu, q_u_sigma, kernel_params, Kzz_inv):
         """
         Computes E[f(x)] wrt q(f) and q(x) = N(x|m, S).
 
@@ -42,18 +42,19 @@ class SparseGP:
         """
         M, K = self.zs.shape
         E_Kxz = vmap(partial(self.kernel.E_Kxz, m=m, S=S, kernel_params=kernel_params))(self.zs)[None] # (1, M)
-        Kzz = vmap(vmap(partial(self.kernel.K, kernel_params=kernel_params), (None, 0)), (0, None))(self.zs, self.zs) + self.jitter * jnp.eye(M) # (M, M)
-        E_f = E_Kxz @ jnp.linalg.solve(Kzz, q_u_mu.T)
+        # Kzz = vmap(vmap(partial(self.kernel.K, kernel_params=kernel_params), (None, 0)), (0, None))(self.zs, self.zs) + self.jitter * jnp.eye(M) # (M, M)
+        # E_f = E_Kxz @ jnp.linalg.solve(Kzz, q_u_mu.T)
+        E_f = E_Kxz @ Kzz_inv @ q_u_mu.T
         return E_f[0] 
 
-    def ff(self, m, S, q_u_mu, q_u_sigma, kernel_params):
+    def ff(self, m, S, q_u_mu, q_u_sigma, kernel_params, Kzz_inv):
         """
         Computes E[f(x)'f(x)] wrt q(f) and q(x) = N(x|m, S).
         """
         M, K = self.zs.shape
         E_KzxKxz = vmap(vmap(partial(self.kernel.E_KzxKxz, m=m, S=S, kernel_params=kernel_params), (None, 0)), (0, None))(self.zs, self.zs) # (M, M)
-        Kzz = vmap(vmap(partial(self.kernel.K, kernel_params=kernel_params), (None, 0)), (0, None))(self.zs, self.zs) + self.jitter * jnp.eye(M) # (M, M)
-        Kzz_inv = jnp.linalg.solve(Kzz, jnp.eye(M))
+        # Kzz = vmap(vmap(partial(self.kernel.K, kernel_params=kernel_params), (None, 0)), (0, None))(self.zs, self.zs) + self.jitter * jnp.eye(M) # (M, M)
+        # Kzz_inv = jnp.linalg.solve(Kzz, jnp.eye(M))
 
         term1 = K * (self.kernel.E_Kxx(m, S, kernel_params) - jnp.trace(Kzz_inv @ E_KzxKxz))
         term2 = jnp.trace(Kzz_inv @ q_u_sigma.sum(0) @ Kzz_inv @ E_KzxKxz)
@@ -61,13 +62,13 @@ class SparseGP:
 
         return term1 + term2 + term3 # scalar
 
-    def dfdx(self, m, S, q_u_mu, q_u_sigma, kernel_params):
+    def dfdx(self, m, S, q_u_mu, q_u_sigma, kernel_params, Kzz_inv):
         """
         Computes E[df/dx] wrt q(f) and q(x) = N(x|m, S).
         """
         M, K = self.zs.shape
         E_dKzxdx = vmap(partial(self.kernel.E_dKzxdx, m=m, S=S, kernel_params=kernel_params))(self.zs) 
-        Kzz = vmap(vmap(partial(self.kernel.K, kernel_params=kernel_params), (None, 0)), (0, None))(self.zs, self.zs) + self.jitter * jnp.eye(M) # (M, M)
-        Kzz_inv = jnp.linalg.solve(Kzz, jnp.eye(M))
+        # Kzz = vmap(vmap(partial(self.kernel.K, kernel_params=kernel_params), (None, 0)), (0, None))(self.zs, self.zs) + self.jitter * jnp.eye(M) # (M, M)
+        # Kzz_inv = jnp.linalg.solve(Kzz, jnp.eye(M))
 
         return q_u_mu @ Kzz_inv @ E_dKzxdx # (D, D)
