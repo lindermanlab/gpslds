@@ -32,12 +32,17 @@ synthetic_data_demo.ipynb       Demo notebook fitting gpSLDS to synthetic data.
 ```
 
 ## Installation
-We recommend installing required packages in a virtual environment with Python `3.12.1`. In your virtual environment, run
+We recommend installing required packages in a virtual environment with Python version `>=3.9.0`. In your virtual environment, run
 ```
 pip install --upgrade pip
 pip install -r requirements.txt
 ```
 This should install JAX with CUDA on your machine (along with other required packages), but JAX requirements can be system dependent. For more information, please see the official JAX installation instructions [here](https://github.com/jax-ml/jax#installation).
+
+To install `gpslds` as a package, run the following command from the root directory.
+```
+pip install -e .
+```
 
 We recommend running the gpSLDS on a GPU backend to fully utilize computational speedups. For our paper, we ran all experiments using an NVIDIA A100 GPU. 
 
