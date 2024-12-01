@@ -39,7 +39,7 @@ pip install -r requirements.txt
 ```
 This should install JAX with CUDA on your machine (along with other required packages), but JAX requirements can be system dependent. For more information, please see the official JAX installation instructions [here](https://github.com/jax-ml/jax#installation).
 
-To install `gpslds` as a package, run the following command from the root directory.
+To install `gpslds` as a package, first clone this repo and then run the following command from the root directory.
 ```
 pip install -e .
 ```
