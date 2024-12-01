@@ -7,8 +7,8 @@ from jax.nn import softplus
 import tensorflow_probability.substrates.jax as tfp
 tfd = tfp.distributions
 from functools import partial
-from utils import gaussian_int
-from em import sgd
+from gpslds.utils import gaussian_int
+from gpslds.em import sgd
 
 class Likelihood:
     def __init__(self, ys_binned, t_mask):

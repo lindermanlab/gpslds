@@ -6,7 +6,7 @@ from jax import lax, jit, grad, vmap
 import tensorflow_probability.substrates.jax as tfp
 tfb = tfp.bijectors
 from functools import partial
-from utils import gaussian_int
+from gpslds.utils import gaussian_int
 
 class Kernel:
     def __init__(self, quadrature): 

@@ -8,8 +8,8 @@ import numpy as np
 from functools import partial
 import tensorflow_probability.substrates.jax as tfp
 tfd = tfp.distributions
-from utils import make_gram
-from initialization import initialize_vem
+from gpslds.utils import make_gram
+from gpslds.initialization import initialize_vem
 import optax
 import wandb
 
