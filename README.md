@@ -47,10 +47,10 @@ pip install -e .
 We recommend running the gpSLDS on a GPU backend to fully utilize computational speedups. For our paper, we ran all experiments using an NVIDIA A100 GPU. 
 
 ## Data format
-To use the gpSLDS on your own data, you will need to ensure that you have:
-- A JAX array `ys_binned` of shape `(n_trials, n_timesteps, n_output_dims)`. To process data in effectively continuous-time, `n_timesteps` should represent the number of time bins at a small discretization step relative to the data sampling rate. We assume that data has been zero-padded in the case of varying length trials.
-- A JAX array `t_mask` of shape `(n_trials, n_timesteps)`. This is 1 for observed timesteps and 0 for unobserved timesteps.
-- A JAX array `trial_mask` of shape `(n_trials, n_timesteps)`. This is 1 for timesteps in an observed trial and 0 for a zero-padded timestep.
-- (Optional) A JAX array `inputs` of shape `(n_trials, n_timesteps, n_input_dims)` consisting of external stimuli.
+To fit a gpSLDS model, your data should be in the following format.
+- `ys_binned`: JAX array, shape `(n_trials, n_timesteps, n_output_dims)` of noisy observations discretized to a fine time grid. In the case of varying trial lengths, we assume that data has been zero-padded at the end of each trial up to the maximum trial length. Here, `n_timesteps = dt * total_duration`.
+- `t_mask`: JAX array, shape `(n_trials, n_timesteps)`. This is a binary mask to handle irregularly-sampled observations, with value 1 for observed timesteps and 0 for unobserved timesteps.
+- `trial_mask`: JAX array, shape `(n_trials, n_timesteps)`. This is a binary mask to handle varying trial lenths, with value 1 for timesteps belonging to the observed part of the trial and 0 for timesteps that have been zero-padded. 
+- (Optional) `inputs`: JAX array, shape `(n_trials, n_timesteps, n_input_dims)` representing known external inputs to the system.
 
-For an example, please see `synthetic_data_demo.ipynb` which demonstrates data formatting and model fitting on a synthetic example.
+For more details, please see `synthetic_data_demo.ipynb` which demonstrates data formatting and model fitting on a synthetic data example.
