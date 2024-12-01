@@ -13,10 +13,29 @@ from functools import partial
 import numpy as np
 from numpy.polynomial.legendre import leggauss
 
+def compute_sigmas(quadrature, m, S):
+    return m + (jnp.linalg.cholesky(S) @ quadrature.unit_sigmas[...,None]).squeeze(-1) # (n_quad**K, K)
+
 def gaussian_int(fn, m, S, weights, unit_sigmas):
-    """Approximates E[f(x)] wrt x ~ N(m, S) with Gauss-Hermite quadrature."""
-    sigmas = m + (jnp.linalg.cholesky(S) @ unit_sigmas[...,None]).squeeze(-1)
-    return jnp.dot(weights, vmap(fn)(sigmas))
+    """
+    Approximates E[f(x)] wrt x ~ N(m, S) with Gauss-Hermite quadrature.
+    fn: function with range in R
+
+    Note, we do not use this to approximate kernel expectations because 
+    there, fn(.) does not have range in R for memory efficiency reasons.
+    """
+    # sigmas = m + (jnp.linalg.cholesky(S) @ unit_sigmas[...,None]).squeeze(-1)
+    # return jnp.dot(weights, vmap(fn)(sigmas))
+    
+    sigmas = m + (jnp.linalg.cholesky(S) @ unit_sigmas[...,None]).squeeze(-1) # (n_quad**K, K)
+    
+    def _step(carry, arg):
+        weight, sigma = arg
+        return carry + weight * fn(sigma), None
+
+    arg = (weights, sigmas)
+    approx_exp, _ = lax.scan(_step, 0., arg)
+    return approx_exp
 
 def gauss_legendre(n, a=-1., b=1.):
     """Computes weights and abscissas for Gauss-Legendre quadrature """

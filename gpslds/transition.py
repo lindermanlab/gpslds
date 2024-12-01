@@ -41,21 +41,22 @@ class SparseGP:
         E_f: (K, ) expectation of f(x)
         """
         M, K = self.zs.shape
-        E_Kxz = vmap(partial(self.kernel.E_Kxz, m=m, S=S, kernel_params=kernel_params))(self.zs)[None] # (1, M)
+        E_Kxz = self.kernel.E_Kxz(self.zs, m, S, kernel_params)[None] # (1, M)
+        # E_Kxz = vmap(partial(self.kernel.E_Kxz, m=m, S=S, kernel_params=kernel_params))(self.zs)[None] # (1, M)
         E_f = E_Kxz @ Kzz_inv @ q_u_mu.T
-        return E_f[0] 
+        return E_f[0]
 
     def ff(self, m, S, q_u_mu, q_u_sigma, kernel_params, Kzz_inv):
         """
         Computes E[f(x)'f(x)] wrt q(f) and q(x) = N(x|m, S).
         """
         M, K = self.zs.shape
-        E_KzxKxz = vmap(vmap(partial(self.kernel.E_KzxKxz, m=m, S=S, kernel_params=kernel_params), (None, 0)), (0, None))(self.zs, self.zs) # (M, M)
+        E_KzxKxz = self.kernel.E_KzxKxz(self.zs, m, S, kernel_params)
+        # E_KzxKxz = vmap(vmap(partial(self.kernel.E_KzxKxz, m=m, S=S, kernel_params=kernel_params), (None, 0)), (0, None))(self.zs, self.zs) # (M, M)
 
         term1 = K * (self.kernel.E_Kxx(m, S, kernel_params) - jnp.trace(Kzz_inv @ E_KzxKxz))
         term2 = jnp.trace(Kzz_inv @ q_u_sigma.sum(0) @ Kzz_inv @ E_KzxKxz)
         term3 = jnp.trace(E_KzxKxz @ Kzz_inv @ q_u_mu.T @ q_u_mu @ Kzz_inv)
-
         return term1 + term2 + term3 # scalar
 
     def dfdx(self, m, S, q_u_mu, q_u_sigma, kernel_params, Kzz_inv):
@@ -63,6 +64,6 @@ class SparseGP:
         Computes E[df/dx] wrt q(f) and q(x) = N(x|m, S).
         """
         M, K = self.zs.shape
-        E_dKzxdx = vmap(partial(self.kernel.E_dKzxdx, m=m, S=S, kernel_params=kernel_params))(self.zs) 
-
+        E_dKzxdx = self.kernel.E_dKzxdx(self.zs, m, S, kernel_params)
+        # E_dKzxdx = vmap(partial(self.kernel.E_dKzxdx, m=m, S=S, kernel_params=kernel_params))(self.zs)
         return q_u_mu @ Kzz_inv @ E_dKzxdx # (D, D)

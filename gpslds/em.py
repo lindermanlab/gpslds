@@ -50,8 +50,44 @@ def kl(fn, m, S, A, b, input, B, q_u_mu, q_u_sigma, kernel, kernel_params, Kzz_i
 
 def kl_over_time(dt, fn, trial_mask, ms, Ss, As, bs, inputs, B, q_u_mu, q_u_sigma, kernel, kernel_params, Kzz_inv):
     """Compute expected KL[q(x)||p(x)] (an integral over time) for a single trial."""
-    kl_on_grid = vmap(partial(kl, fn, B=B, q_u_mu=q_u_mu, q_u_sigma=q_u_sigma, kernel=kernel, kernel_params=kernel_params, Kzz_inv=Kzz_inv))(ms, Ss, As, bs, inputs)
-    kl_term = dt * (kl_on_grid * trial_mask).sum()
+    # kl_on_grid = vmap(partial(kl, fn, B=B, q_u_mu=q_u_mu, q_u_sigma=q_u_sigma, kernel=kernel, kernel_params=kernel_params, Kzz_inv=Kzz_inv))(ms, Ss, As, bs, inputs)
+    # kl_term = dt * (kl_on_grid * trial_mask).sum()
+    # return kl_term
+    
+    # try to replace with a scan
+    # def _step(carry, arg):
+    #     m, S, A, b, input, mask_val = arg
+    #     kl_val = kl(fn, m, S, A, b, input, B, q_u_mu, q_u_sigma, kernel, kernel_params, Kzz_inv)
+    #     return carry + kl_val * mask_val, None
+    # kl_term, _ = lax.scan(_step, 0., (ms, Ss, As, bs, inputs, trial_mask))
+    # return dt * kl_term
+
+    # try gradient chunking...
+    T, K = ms.shape
+    I = inputs.shape[-1]
+    chunk_size = 500 # for the time being. need to pass as argument. note: cannot set to sqrt(T) because this is input-shape dependent
+    ms_chunks = ms.reshape(-1, chunk_size, K)
+    Ss_chunks = Ss.reshape(-1, chunk_size, K, K)
+    As_chunks = As.reshape(-1, chunk_size, K, K)
+    bs_chunks = bs.reshape(-1, chunk_size, K)
+    inputs_chunks = inputs.reshape(-1, chunk_size, I)
+    mask_chunks = trial_mask.reshape(-1, chunk_size)
+
+    @jax.checkpoint
+    def chunk_vmap(ms_c, Ss_c, As_c, bs_c, inputs_c, trial_mask_c):
+        kl_term_c = vmap(partial(kl, fn, B=B, q_u_mu=q_u_mu, q_u_sigma=q_u_sigma, kernel=kernel, kernel_params=kernel_params, Kzz_inv=Kzz_inv))(ms_c, Ss_c, As_c, bs_c, inputs_c)
+        return dt * (kl_term_c * trial_mask_c).sum()
+
+    def outer_scan(ms_chunks, Ss_chunks, As_chunks, bs_chunks, inputs_chunks, mask_chunks):
+        def _step(carry, arg):
+            ms_c, Ss_c, As_c, bs_c, inputs_c, mask_c = arg
+            kl_term_c = chunk_vmap(ms_c, Ss_c, As_c, bs_c, inputs_c, mask_c)
+            return carry + kl_term_c, None
+        kl_term, _ = lax.scan(_step, 0., (ms_chunks, Ss_chunks, As_chunks, bs_chunks, inputs_chunks, mask_chunks)) # this is the sum across chunks
+        return kl_term
+        
+    kl_term = outer_scan(ms_chunks, Ss_chunks, As_chunks, bs_chunks, inputs_chunks, mask_chunks)
+
     return kl_term
 
 def compute_elbo_per_trial(dt, fn, likelihood, ys, t_mask, trial_mask, ms, Ss, As, bs, inputs, B, q_u_mu, q_u_sigma, output_params, kernel, kernel_params):
@@ -206,33 +242,60 @@ def e_step(dt, fn, likelihood, batch_inds, trial_mask, As, bs, m0, S0, inputs, B
     
 def update_q_u(dt, fn, trial_mask, ms, Ss, As, bs, inputs, B, kernel, kernel_params, Kzz):
     """Perform closed-form updates for variational parameters of inducing points."""
+
+    # try gradient chunking...
+    bsz, T, K = ms.shape
+    I = inputs.shape[-1]
+    chunk_size = 500 # for the time being. need to pass as argument. note: cannot set to sqrt(T) because this is input-shape dependent
+    ms_chunks = ms.reshape(bsz, -1, chunk_size, K)
+    Ss_chunks = Ss.reshape(bsz, -1, chunk_size, K, K)
+    As_chunks = As.reshape(bsz, -1, chunk_size, K, K)
+    bs_chunks = bs.reshape(bsz, -1, chunk_size, K)
+    inputs_chunks = inputs.reshape(bsz, -1, chunk_size, I)
+    mask_chunks = trial_mask.reshape(bsz, -1, chunk_size)
     
     # Define helper functions on single-trial level
     def _q_u_sigma_int(dt, fn, trial_mask, ms, Ss, kernel, kernel_params):
-        E_KzxKxz_over_zs = vmap(vmap(partial(kernel.E_KzxKxz, kernel_params=kernel_params), (None, 0, None, None)), (0, None, None, None))
-        E_KzxKxz_on_grid = vmap(E_KzxKxz_over_zs, (None, None, 0, 0))(fn.zs, fn.zs, ms, Ss) # (T, M, M)
+        E_KzxKxz_on_grid = vmap(partial(kernel.E_KzxKxz, fn.zs, kernel_params=kernel_params))(ms, Ss) # (T, M, M)
+        # E_KzxKxz_over_zs = vmap(vmap(partial(kernel.E_KzxKxz, kernel_params=kernel_params), (None, 0, None, None)), (0, None, None, None))
+        # E_KzxKxz_on_grid = vmap(E_KzxKxz_over_zs, (None, None, 0, 0))(fn.zs, fn.zs, ms, Ss) # (T, M, M)
         int_E_KzxKxz = dt * (E_KzxKxz_on_grid * trial_mask[...,None,None]).sum(0)
         return int_E_KzxKxz
 
+    # def _int_E_KzxKxz(dt, fn, trial_mask, ms, Ss, kernel, kernel_params): # all trial level
+    #     def _chunk_vmap(ms_c, Ss_c, trial_mask_c): # single trial level
+    #         E_KzxKxz_on_grid = vmap(partial(kernel.E_KzxKxz, fn.zs, kernel_params=kernel_params))(ms_c, Ss_c)
+    #         int_E_KzxKxz = dt * (E_KzxKxz_on_grid * trial_mask_c[...,None,None]).sum(0)
+    #         return int_E_KzxKxz
+
+    #     def _outer_scan(ms, Ss, trial_mask):
+            
+            
+    #     int_term = _outer_scan(ms_chunks, Ss_chunks, mask_chunks)
+    #     return int_term
+        
     def _q_u_mu_int1(dt, fn, trial_mask, ms, Ss, As, bs, inputs, B, kernel, kernel_params):
-        E_Kxz_over_zs = vmap(partial(kernel.E_Kxz, kernel_params=kernel_params), (0, None, None))
-        Psi1 = vmap(E_Kxz_over_zs, (None, 0, 0))(fn.zs, ms, Ss) # (T, M)
+        Psi1 = vmap(partial(kernel.E_Kxz, fn.zs, kernel_params=kernel_params))(ms, Ss) # (T, M)
+        # E_Kxz_over_zs = vmap(partial(kernel.E_Kxz, kernel_params=kernel_params), (0, None, None))
+        # Psi1 = vmap(E_Kxz_over_zs, (None, 0, 0))(fn.zs, ms, Ss) # (T, M)
         f_q = (-As @ ms[...,None]).squeeze(-1) + bs # (T, D)
-        input_correction = (B[None] @ inputs[...,None]).squeeze(-1) # (T, D)
-        integrand_on_grid = vmap(jnp.outer)(Psi1, f_q - input_correction) # (T, M, D)
-        int1 = dt * (integrand_on_grid * trial_mask[...,None,None]).sum(0) # (M, D)
+        input_correction = (B[None] @ inputs[...,None]).squeeze(-1) # (T, K)
+        integrand_on_grid = vmap(jnp.outer)(Psi1, f_q - input_correction) # (T, M, K)
+        int1 = dt * (integrand_on_grid * trial_mask[...,None,None]).sum(0) # (M, K)
         return int1
 
     def _q_u_mu_int2(dt, fn, trial_mask, ms, Ss, As, kernel, kernel_params):
-        E_dKzxdx_over_zs = vmap(partial(kernel.E_dKzxdx, kernel_params=kernel_params), (0, None, None))
-        Psid1 = vmap(E_dKzxdx_over_zs, (None, 0, 0))(fn.zs, ms, Ss) # (T, M, D)
-        integrand_on_grid = Psid1 @ Ss @ As.transpose((0, 2, 1)) # (T, M, D)
-        int2 = dt * (integrand_on_grid * trial_mask[...,None,None]).sum(0) # (M, D)
+        Psid1 = vmap(partial(kernel.E_dKzxdx, fn.zs, kernel_params=kernel_params))(ms, Ss) # (T, M, K)
+        # E_dKzxdx_over_zs = vmap(partial(kernel.E_dKzxdx, kernel_params=kernel_params), (0, None, None))
+        # Psid1 = vmap(E_dKzxdx_over_zs, (None, 0, 0))(fn.zs, ms, Ss) # (T, M, D)
+        integrand_on_grid = Psid1 @ Ss @ As.transpose((0, 2, 1)) # (T, M, K)
+        int2 = dt * (integrand_on_grid * trial_mask[...,None,None]).sum(0) # (M, K)
         return int2
 
     # Perform updates
     int_E_KzxKxz = vmap(partial(_q_u_sigma_int, dt, fn, kernel=kernel, kernel_params=kernel_params))(trial_mask, ms, Ss).sum(0) 
-    q_u_sigma = (Kzz @ jnp.linalg.solve(Kzz + int_E_KzxKxz, Kzz))[None].repeat(ms.shape[-1], 0) # (D, M, M)
+    
+    q_u_sigma = (Kzz @ jnp.linalg.solve(Kzz + int_E_KzxKxz, Kzz))[None].repeat(ms.shape[-1], 0) # (K, M, M)
 
     int1 = vmap(partial(_q_u_mu_int1, dt, fn, B=B, kernel=kernel, kernel_params=kernel_params))(trial_mask, ms, Ss, As, bs, inputs).sum(0) 
     int2 = vmap(partial(_q_u_mu_int2, dt, fn, kernel=kernel, kernel_params=kernel_params))(trial_mask, ms, Ss, As).sum(0) 
@@ -255,13 +318,13 @@ def update_B(dt, fn, ms, Ss, As, bs, inputs, q_u_mu, q_u_sigma, kernel, kernel_p
         return hs 
 
     def _int_outer_prod_inputs(inputs, jitter):
-        """Computes \int_0^T u(t) u(t)^T dt."""
+        """Computes int_0^T u(t) u(t)^T dt."""
         n_inputs = inputs.shape[-1]
         outer_prod = vmap(jnp.outer)(inputs, inputs) + jitter * jnp.eye(n_inputs) 
         return dt * outer_prod.sum(0) 
     
     def _int_outer_prod(hs, inputs):
-        """Computes \int_0^T h(t) u(t)^T dt."""
+        """Computes int_0^T h(t) u(t)^T dt."""
         outer_prod = vmap(jnp.outer)(hs, inputs) 
         return dt * outer_prod.sum(0) 
 
@@ -341,7 +404,6 @@ def fit_variational_em(key,
     output_params, kernel_params: dicts containing learned parameters
     elbos_lst: (n_iters,) list of elbos at each vEM iter
     """
-    @jit
     def _step(batch_inds, m0, S0, ms, Ss, As, bs, B, q_u_mu, q_u_sigma, mu0, V0, output_params, kernel_params):
         """Runs a single E-step and M-step"""
         m0_batch, S0_batch, mu0_batch, V0_batch, As_batch, bs_batch, trial_mask_batch, inputs_batch = m0[batch_inds], S0[batch_inds], mu0[batch_inds], V0[batch_inds], As[batch_inds], bs[batch_inds], trial_mask[batch_inds], inputs[batch_inds]

@@ -2,12 +2,12 @@ import jax
 jax.config.update("jax_enable_x64", True)
 
 import jax.numpy as jnp
-from jax import vmap
+from jax import vmap, lax
 from jax.nn import softplus
 import tensorflow_probability.substrates.jax as tfp
 tfd = tfp.distributions
 from functools import partial
-from utils import gaussian_int
+from utils import compute_sigmas, gaussian_int
 from em import sgd
 
 class Likelihood:
@@ -36,7 +36,7 @@ class Likelihood:
 class Gaussian(Likelihood):
     def __init__(self, ys_binned, t_mask):
         """
-        Initialize Gaussian likelihood class, y \sim N(Cx + d, R).
+        Initialize Gaussian likelihood class, y ~ N(Cx + d, R).
 
         Parameters:
         --------------
@@ -134,7 +134,14 @@ class Poisson(Likelihood):
             return ll + correction
         elif self.link == 'softplus':
             fn = lambda x: tfd.Poisson(rate=self.dt * softplus(C @ x + d)).log_prob(y).sum()
-            return gaussian_int(fn, m, S, self.quadrature.weights, self.quadrature.unit_sigmas)
+            # return gaussian_int(fn, m, S, self.quadrature.weights, self.quadrature.unit_sigmas)
+            # use Gauss-Hermite quadrature
+            sigmas = compute_sigmas(self.quadrature, m, S)
+            def _step(carry, arg):
+                weight, sigma = arg
+                return carry + weight * fn(sigma), None
+            result, _ = lax.scan(_step, 0., (self.quadrature.weights, sigmas))
+            return result # scalar
         else:
             raise NotImplementedError()
 
@@ -168,7 +175,14 @@ class PoissonProcess(Likelihood):
             return -jnp.exp(C @ m + d + 0.5 * jnp.diag(C @ S @ C.T)) 
         elif self.link == 'softplus':
             fn = lambda x: -softplus(C @ x + d)
-            return gaussian_int(fn, m, S, self.quadrature.weights, self.quadrature.unit_sigmas) 
+            # return gaussian_int(fn, m, S, self.quadrature.weights, self.quadrature.unit_sigmas) 
+            # use Gauss-Hermite quadrature
+            sigmas = compute_sigmas(self.quadrature, m, S)
+            def _step(carry, arg):
+                weight, sigma = arg
+                return carry + weight * fn(sigma), None
+            result, _ = lax.scan(_step, jnp.zeros(C.shape[0]), (self.quadrature.weights, sigmas))
+            return result # (D,)
         else:
             raise NotImplementedError()
 
@@ -179,7 +193,14 @@ class PoissonProcess(Likelihood):
             return C @ m + d 
         elif self.link == 'softplus':
             fn = lambda x: jnp.log(softplus(C @ x + d))
-            return gaussian_int(fn, m, S, self.quadrature.weights, self.quadrature.unit_sigmas)
+            # return gaussian_int(fn, m, S, self.quadrature.weights, self.quadrature.unit_sigmas) 
+            # use Gauss-Hermite quadrature
+            sigmas = compute_sigmas(self.quadrature, m, S)
+            def _step(carry, arg):
+                weight, sigma = arg
+                return carry + weight * fn(sigma), None
+            result, _ = lax.scan(_step, jnp.zeros(C.shape[0]), (self.quadrature.weights, sigmas))
+            return result # (D,)
         else:
             raise NotImplementedError()
 
@@ -189,7 +210,6 @@ class PoissonProcess(Likelihood):
         ell_cont = self.dt * (t_mask[:,None] * ell_cont_on_grid).sum()
         ell_jump_on_grid = vmap(partial(self.ell_jump, output_params=output_params))(ms, Ss) # (T, K)
         t_obs_mask = (ys > 0) * t_mask[:,None] # (T, K)
-        # TODO simplify this.
-        ell_jump = vmap(jnp.where, (0, 0, None))(t_obs_mask.T, ell_jump_on_grid.T, 0).sum() # (K, T) -> scalar
+        ell_jump = (t_obs_mask * ell_jump_on_grid).sum()
         ell_term = ell_cont + ell_jump
         return ell_term
