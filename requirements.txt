@@ -1,0 +1,7 @@
+tensorflow-probability==0.25.0
+optax==0.2.3
+wandb
+jupyter
+matplotlib
+--find-links https://storage.googleapis.com/jax-releases/jax_releases.html
+jax[cuda]>=version
