@@ -43,12 +43,13 @@ To install `gpslds` as a package, run the following command from the root direct
 ```
 pip install -e .
 ```
+If you would like to run the demo notebook, `synthetic_data_demo.ipynb`, then you will also need to install the [ssm](https://github.com/lindermanlab/ssm) package which is used to initialize some parameters of the model.
 
 We recommend running the gpSLDS on a GPU backend to fully utilize computational speedups. For our paper, we ran all experiments using an NVIDIA A100 GPU. 
 
 ## Data format
 To fit a gpSLDS model, your data should be in the following format.
-- `ys_binned`: JAX array, shape `(n_trials, n_timesteps, n_output_dims)` of noisy observations discretized to a fine time grid. In the case of varying trial lengths, we assume that data has been zero-padded at the end of each trial up to the maximum trial length. Here, `n_timesteps = dt * total_duration`.
+- `ys_binned`: JAX array, shape `(n_trials, n_timesteps, n_output_dims)` of noisy observations discretized to a fine time grid of width `dt`. In the case of varying trial lengths, we assume that data has been zero-padded at the end of each trial up to the maximum trial length. Here, `n_timesteps * dt = total_duration`.
 - `t_mask`: JAX array, shape `(n_trials, n_timesteps)`. This is a binary mask to handle irregularly-sampled observations, with value 1 for observed timesteps and 0 for unobserved timesteps.
 - `trial_mask`: JAX array, shape `(n_trials, n_timesteps)`. This is a binary mask to handle varying trial lenths, with value 1 for timesteps belonging to the observed part of the trial and 0 for timesteps that have been zero-padded. 
 - (Optional) `inputs`: JAX array, shape `(n_trials, n_timesteps, n_input_dims)` representing known external inputs to the system.
