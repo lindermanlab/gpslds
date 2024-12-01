@@ -55,3 +55,15 @@ To fit a gpSLDS model, your data should be in the following format.
 - (Optional) `inputs`: JAX array, shape `(n_trials, n_timesteps, n_input_dims)` representing known external inputs to the system.
 
 For more details, please see `synthetic_data_demo.ipynb` which demonstrates data formatting and model fitting on a synthetic data example.
+
+## Citation
+Please use the following citation for our work:
+```
+@inproceedings{hu2024modeling,
+  title={Modeling Latent Neural Dynamics with Gaussian Process Switching Linear Dynamical Systems},
+  author={Hu, Amber and Zoltowski, David and Nair, Aditya and Anderson, David and Duncker, Lea and Linderman, Scott},
+  booktitle={Advances in Neural Information Processing Systems},
+  year={2024},
+  url={https://doi.org/10.48550/arXiv.2408.03330}
+}
+```
