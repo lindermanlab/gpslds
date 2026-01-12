@@ -2,7 +2,7 @@
 
 🚨 UPDATE: As of 12/2025, SING (Hu*, Smith*, Linderman; NeurIPS 2025) is the recommended inference algorithm for fitting gpSLDS models. You can find an implementation of SING and the gpSLDS model [here](https://github.com/lindermanlab/sing). 🚨
 
-This repository contains an implementation of the Gaussian Process Switching Linear Dynamical System (gpSLDS) from our paper:
+This repository contains the original implementation of the Gaussian Process Switching Linear Dynamical System (gpSLDS) from our paper:
 
 **Modeling Latent Neural Dynamics with Gaussian Process Switching Linear Dynamical Systems**  
 Amber Hu, David Zoltowski, Aditya Nair, David Anderson, Lea Duncker, and Scott Linderman\
